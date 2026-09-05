@@ -1,0 +1,10 @@
+{
+  "description": "HydroGuard AI Field empowers citizens during flood emergencies with real-time alerts, incident reporting, and safety resources, ensuring quick access to vital information.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
