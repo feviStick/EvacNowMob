@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
+    "serve": "npx -y serve . -p 8443",
     "build": "vite build",
     "preview": "vite preview",
     "format": "oxfmt"
