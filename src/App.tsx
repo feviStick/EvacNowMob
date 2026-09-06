@@ -1,5 +1,9 @@
 import { useState, useRef, useEffect, useCallback, lazy, Suspense } from "react";
 const MapView = lazy(() => import("./MapView"));
+import AuthScreen from "./components/AuthScreen";
+import { useAuth } from "./context/AuthContext";
+import { createReport, subscribeToUserReports } from "./services/reportService";
+import { subscribeToActiveAlerts } from "./services/alertService";
 import {
   Home,
   AlertTriangle,
@@ -292,7 +296,16 @@ function HomeView({ onNavigate }: { onNavigate: (tab: NavTab) => void }) {
     },
   };
 
-  const cfg = alertConfig[alertLevel];
+  const [activeAlerts, setActiveAlerts] = useState([]);
+  useEffect(() => {
+    return subscribeToActiveAlerts((alerts) => {
+      setActiveAlerts(alerts);
+    });
+  }, []);
+
+  const currentAlert = activeAlerts.length > 0 ? activeAlerts[0] : null;
+  
+  const cfg = currentAlert ? alertConfig[currentAlert.severity || 'warning'] : alertConfig[alertLevel];
   const AlertIcon = cfg.icon;
 
   return (
@@ -305,10 +318,10 @@ function HomeView({ onNavigate }: { onNavigate: (tab: NavTab) => void }) {
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
-              <span className={`text-xs font-black tracking-widest ${cfg.text}`}>{cfg.label}</span>
+              <span className={`text-xs font-black tracking-widest ${cfg.text}`}>{currentAlert ? currentAlert.title : cfg.label}</span>
               <span className="text-xs text-zinc-500">• Now</span>
             </div>
-            <p className="text-sm text-zinc-200 leading-snug">{cfg.message}</p>
+            <p className="text-sm text-zinc-200 leading-snug">{currentAlert ? currentAlert.description : cfg.message}</p>
           </div>
           <button className="text-zinc-500 flex-shrink-0 p-1">
             <ChevronRight className="w-4 h-4" />
@@ -437,12 +450,27 @@ function ReportView({ onBack }: { onBack: () => void }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
-  const handleSubmit = () => {
+  const { currentUser } = useAuth();
+  const handleSubmit = async () => {
     setSubmitting(true);
-    setTimeout(() => {
-      setSubmitting(false);
+    try {
+      await createReport(currentUser.uid, {
+        severity: selectedSeverity,
+        description,
+        type: 'citizen_report',
+        latitude: 28.6139,
+        longitude: 77.2090,
+        location: "Sector 4, Delhi",
+        priority: selectedSeverity === 'evacuation' ? 'High' : 'Normal',
+        reporter: currentUser.name || currentUser.email
+      });
       setSubmitted(true);
-    }, 2200);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to submit report");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (submitted) {
@@ -705,16 +733,21 @@ function ReportView({ onBack }: { onBack: () => void }) {
 // ─── Feed View ────────────────────────────────────────────────────────────────
 
 function FeedView() {
+  const { currentUser } = useAuth();
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<"all" | SeverityType>("all");
-  const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
+  const [filter, setFilter] = useState("all");
+  const [likedIds, setLikedIds] = useState(new Set());
+  const [myReports, setMyReports] = useState([]);
 
   useEffect(() => {
-    const t = setTimeout(() => setLoading(false), 1200);
-    return () => clearTimeout(t);
-  }, []);
+    if (!currentUser) return;
+    return subscribeToUserReports(currentUser.uid, (reports) => {
+      setMyReports(reports);
+      setLoading(false);
+    });
+  }, [currentUser]);
 
-  const filtered = filter === "all" ? FEED_DATA : FEED_DATA.filter((i) => i.severity === filter);
+  const filtered = filter === "all" ? myReports : myReports.filter((i) => i.severity === filter);
 
   return (
     <div className="flex flex-col h-full">
@@ -749,7 +782,7 @@ function FeedView() {
         {loading
           ? Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
           : filtered.map((item, idx) => {
-              const sev = SEVERITY_CONFIG[item.severity];
+              const sev = SEVERITY_CONFIG[item.severity || 'waterlogging'];
               const SevIcon = sev.icon;
               const liked = likedIds.has(item.id);
 
@@ -801,11 +834,11 @@ function FeedView() {
 
                         <div className="flex items-center justify-between mt-3">
                           <div className="flex items-center gap-3">
-                            <span className="text-xs text-zinc-600">{item.reporter} · {item.time}</span>
+                            <span className="text-xs text-zinc-600">{item.reporter} · {item.createdAt ? new Date(item.createdAt.seconds * 1000).toLocaleTimeString() : "Just now"}</span>
                           </div>
                           {!item.hasImage && (
                             <div>
-                              {item.verified ? (
+                              {item.status === 'Verified' ? (
                                 <span className="bg-emerald-600/20 border border-emerald-600/40 text-emerald-400 text-xs font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
                                   <CheckCircle className="w-3 h-3" />
                                   AI Verified
@@ -828,14 +861,14 @@ function FeedView() {
                         onClick={() =>
                           setLikedIds((prev) => {
                             const next = new Set(prev);
-                            liked ? next.delete(item.id) : next.add(item.id);
+                            liked ? next.delete(item.reportId) : next.add(item.reportId);
                             return next;
                           })
                         }
                         className={`tap-active flex items-center gap-1.5 text-xs font-semibold transition-colors ${liked ? "text-sky-400" : "text-zinc-500"}`}
                       >
                         <ThumbsUp className="w-4 h-4" />
-                        {item.upvotes + (liked ? 1 : 0)}
+                        {(item.upvotes || 0) + (liked ? 1 : 0)}
                       </button>
                       <button className="tap-active flex items-center gap-1.5 text-xs font-semibold text-zinc-500">
                         <Share2 className="w-4 h-4" />
@@ -1027,7 +1060,8 @@ function BottomNav({
 // ─── App Shell ────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<NavTab>("home");
+  const { currentUser, logout } = useAuth();
+  const [activeTab, setActiveTab] = useState("home");
   const [isOnline, setIsOnline] = useState(true);
 
   useEffect(() => {
@@ -1040,6 +1074,10 @@ export default function App() {
       window.removeEventListener("offline", onOffline);
     };
   }, []);
+
+  if (!currentUser) {
+    return <AuthScreen />;
+  }
 
   const isReportView = activeTab === "report";
 
@@ -1064,10 +1102,10 @@ export default function App() {
             <div className="flex items-center gap-2">
               <OnlineStatusDot online={isOnline} />
               <button
-                onClick={() => setIsOnline((v) => !v)}
-                className="tap-active w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center"
+                onClick={() => logout()}
+                className="tap-active w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center text-xs text-zinc-400 font-bold"
               >
-                <Bell className="w-4 h-4 text-zinc-400" />
+                X
               </button>
             </div>
           </header>
